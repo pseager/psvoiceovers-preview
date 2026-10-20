@@ -1,0 +1,91 @@
+name: Preview build
+
+# Builds a chosen branch of pseager/PSVoiceovers and publishes it to this
+# repo's GitHub Pages site: https://pseager.github.io/psvoiceovers-preview/
+# The live site (psvoiceovers.com, deployed from PSVoiceovers main) is never
+# touched by this workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "PSVoiceovers branch or ref to preview (blank = use PREVIEW_REF file)"
+        required: false
+        default: ""
+  push:
+    branches: [main]
+    paths: [PREVIEW_REF]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: preview
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout preview repo (for PREVIEW_REF)
+        uses: actions/checkout@v4
+
+      - name: Resolve ref
+        id: ref
+        run: |
+          REF="${{ inputs.ref }}"
+          if [ -z "$REF" ]; then REF="$(tr -d '[:space:]' < PREVIEW_REF)"; fi
+          echo "value=$REF" >> "$GITHUB_OUTPUT"
+          echo "Previewing PSVoiceovers ref: $REF"
+
+      - name: Checkout PSVoiceovers at ref
+        uses: actions/checkout@v4
+        with:
+          repository: pseager/PSVoiceovers
+          ref: ${{ steps.ref.outputs.value }}
+          path: site
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install and build
+        working-directory: site
+        run: |
+          npm ci
+          npm run build
+
+      - name: Make dist preview-safe
+        working-directory: site
+        run: |
+          rm -f dist/CNAME
+          touch dist/.nojekyll
+          printf 'User-agent: *\nDisallow: /\n' > dist/robots.txt
+          sed -i 's|<meta name="robots" content="index, follow" />|<meta name="robots" content="noindex, nofollow" />|' dist/index.html
+          grep -q 'noindex' dist/index.html || sed -i 's|</head>|<meta name="robots" content="noindex, nofollow" /></head>|' dist/index.html
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
